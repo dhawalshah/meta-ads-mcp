@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP
 import requests
 from typing import Dict, List, Optional, Any
 import json
+import os
 import requests
 import sys
 
@@ -19,7 +20,7 @@ DEFAULT_AD_ACCOUNT_FIELDS = [
 ]
 
 # Create an MCP server
-mcp = FastMCP("fb-api-mcp-server")
+mcp = FastMCP("fb-api-mcp-server", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
 
 # Add a global variable to store the token
 FB_ACCESS_TOKEN = None
@@ -39,8 +40,13 @@ def _get_fb_access_token() -> str:
     """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
-        # Look for --fb-token argument
-        if "--fb-token" in sys.argv:
+        # Check environment variable first
+        env_token = os.environ.get("FB_ACCESS_TOKEN")
+        if env_token:
+            FB_ACCESS_TOKEN = env_token
+            print("Using Facebook token from FB_ACCESS_TOKEN environment variable")
+        # Fall back to --fb-token CLI argument
+        elif "--fb-token" in sys.argv:
             token_index = sys.argv.index("--fb-token") + 1
             if token_index < len(sys.argv):
                 FB_ACCESS_TOKEN = sys.argv[token_index]
@@ -48,7 +54,7 @@ def _get_fb_access_token() -> str:
             else:
                 raise Exception("--fb-token argument provided but no token value followed it")
         else:
-            raise Exception("Facebook token must be provided via '--fb-token' command line argument")
+            raise Exception("Facebook token must be provided via FB_ACCESS_TOKEN environment variable or '--fb-token' command line argument")
 
     return FB_ACCESS_TOKEN
 
@@ -2291,7 +2297,566 @@ def get_activities_by_adset(
     return _make_graph_api_call(url, params)
 
 
+# --- Ad Preview Tools ---
+
+@mcp.tool()
+def get_ad_previews(
+    ad_id: str,
+    ad_format: Optional[str] = None,
+    fields: Optional[List[str]] = None
+) -> Dict:
+    """Get preview iframes for an ad across different placements.
+    Args:
+        ad_id: The ID of the ad.
+        ad_format: The placement format to preview, e.g. DESKTOP_FEED_STANDARD,
+                   MOBILE_FEED_STANDARD, INSTAGRAM_STANDARD, INSTAGRAM_STORY,
+                   FACEBOOK_STORY, RIGHT_COLUMN_STANDARD, SUGGESTED_VIDEO,
+                   MARKETPLACE, MESSENGER_MOBILE_INBOX_MEDIA. If None, returns all available.
+        fields: Fields to return, e.g. ['body', 'title', 'ad_format'].
+    Returns:
+        A dictionary containing preview iframe data for the ad.
+    """
+    kwargs = {}
+    if ad_format:
+        kwargs['ad_format'] = ad_format
+    if fields:
+        kwargs['fields'] = fields
+    return _fetch_edge(ad_id, 'previews', **kwargs)
+
+
+# --- Custom Audience Tools ---
+
+@mcp.tool()
+def get_custom_audiences(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """List all custom audiences for an ad account (CRM uploads, pixel-based, engagement-based, lookalikes, etc.).
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, description, subtype,
+                approximate_count_lower_bound, approximate_count_upper_bound,
+                data_source, delivery_status, retention_days, rule, time_created,
+                time_updated, lookalike_spec.
+                Defaults to [id, name, subtype, approximate_count_lower_bound,
+                approximate_count_upper_bound, delivery_status, time_created].
+        limit: Maximum number of results to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the list of custom audiences and pagination info.
+    """
+    default_fields = [
+        'id', 'name', 'subtype', 'approximate_count_lower_bound',
+        'approximate_count_upper_bound', 'delivery_status', 'time_created'
+    ]
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'customaudiences',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+@mcp.tool()
+def get_saved_audiences(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """List all saved (pre-defined) audiences for an ad account.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, targeting, run_status,
+                approximate_count_lower_bound, approximate_count_upper_bound,
+                sentence_lines, time_created, time_updated.
+                Defaults to [id, name, approximate_count_lower_bound,
+                approximate_count_upper_bound, sentence_lines].
+        limit: Maximum number of results to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the list of saved audiences.
+    """
+    default_fields = [
+        'id', 'name', 'approximate_count_lower_bound',
+        'approximate_count_upper_bound', 'sentence_lines'
+    ]
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'saved_audiences',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+# --- Reach & Delivery Estimation Tools ---
+
+@mcp.tool()
+def get_reach_estimate(
+    act_id: str,
+    targeting_spec: Dict,
+    optimization_goal: Optional[str] = None,
+    currency: Optional[str] = None
+) -> Dict:
+    """Estimate the potential audience reach for a given targeting spec before creating an ad set.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        targeting_spec: A dictionary defining the audience targeting. Example:
+                        {"geo_locations": {"countries": ["US"]}, "age_min": 25, "age_max": 45}
+        optimization_goal: The optimization goal, e.g. REACH, IMPRESSIONS, LINK_CLICKS,
+                           CONVERSIONS, VIDEO_VIEWS. Affects the estimate.
+        currency: The currency code, e.g. USD. Defaults to the account currency.
+    Returns:
+        A dictionary containing users_lower_bound and users_upper_bound estimates.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/reachestimate"
+    params = {
+        'access_token': access_token,
+        'targeting_spec': json.dumps(targeting_spec)
+    }
+    if optimization_goal:
+        params['optimization_goal'] = optimization_goal
+    if currency:
+        params['currency'] = currency
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_delivery_estimate(
+    adset_id: str,
+    optimization_goal: Optional[str] = None,
+    promoted_object: Optional[Dict] = None
+) -> Dict:
+    """Get projected delivery metrics (estimated daily reach and impressions) for an existing ad set.
+    Args:
+        adset_id: The ID of the ad set.
+        optimization_goal: Override the optimization goal for the estimate, e.g. REACH, LINK_CLICKS.
+        promoted_object: The object being advertised, e.g. {"page_id": "123"}.
+    Returns:
+        A dictionary containing daily_outcomes_curve with projected reach/impressions.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{adset_id}/delivery_estimate"
+    params = {'access_token': access_token}
+    if optimization_goal:
+        params['optimization_goal'] = optimization_goal
+    if promoted_object:
+        params['promoted_object'] = json.dumps(promoted_object)
+    return _make_graph_api_call(url, params)
+
+
+# --- Targeting Tools ---
+
+@mcp.tool()
+def get_targeting_sentence_lines(adset_id: str) -> Dict:
+    """Get a human-readable description of an ad set's targeting configuration.
+    Args:
+        adset_id: The ID of the ad set.
+    Returns:
+        A dictionary containing sentence_lines — a plain-English breakdown of the targeting.
+    """
+    return _fetch_edge(adset_id, 'targetingsentencelines')
+
+
+@mcp.tool()
+def search_targeting_options(
+    act_id: str,
+    query: str,
+    limit: Optional[int] = None
+) -> Dict:
+    """Search for available targeting options (interests, behaviors, demographics) by keyword.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        query: The keyword to search for, e.g. "yoga", "small business owners".
+        limit: Maximum number of results to return.
+    Returns:
+        A dictionary containing matching targeting options with their IDs, names, and types.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/targetingsearch"
+    params = {'access_token': access_token, 'q': query}
+    if limit:
+        params['limit'] = limit
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_targeting_suggestions(
+    act_id: str,
+    targeting_spec: Dict,
+    limit: Optional[int] = None
+) -> Dict:
+    """Get targeting suggestions based on an existing targeting spec (e.g. expand interests).
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        targeting_spec: An existing targeting spec to base suggestions on. Example:
+                        {"interests": [{"id": "6003139266461", "name": "Yoga"}]}
+        limit: Maximum number of suggestions to return.
+    Returns:
+        A dictionary containing suggested targeting options.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/targetingsuggestions"
+    params = {
+        'access_token': access_token,
+        'targeting_spec': json.dumps(targeting_spec)
+    }
+    if limit:
+        params['limit'] = limit
+    return _make_graph_api_call(url, params)
+
+
+# --- Pixel & Conversion Tools ---
+
+@mcp.tool()
+def get_pixels(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None
+) -> Dict:
+    """List all Meta Pixels associated with an ad account.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, code, creation_time,
+                last_fired_time, is_unavailable, owner_ad_account, owner_business.
+                Defaults to [id, name, creation_time, last_fired_time].
+        limit: Maximum number of results to return.
+    Returns:
+        A dictionary containing the list of pixels.
+    """
+    default_fields = ['id', 'name', 'creation_time', 'last_fired_time']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'adspixels', fields=effective_fields, limit=limit)
+
+
+@mcp.tool()
+def get_custom_conversions(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """List all custom conversions defined for an ad account.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, description, event_source_id,
+                rule, default_conversion_value, custom_event_type, data_sources,
+                is_archived, creation_time, last_updated_time.
+                Defaults to [id, name, custom_event_type, is_archived, creation_time].
+        limit: Maximum number of results to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the list of custom conversions.
+    """
+    default_fields = ['id', 'name', 'custom_event_type', 'is_archived', 'creation_time']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'customconversions',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+# --- Ad Creative Library Tools ---
+
+@mcp.tool()
+def get_ad_images(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    hashes: Optional[List[str]] = None
+) -> Dict:
+    """List images in the ad account's creative library.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, hash, name, url, url_128,
+                width, height, created_time, updated_time, status, permalink_url.
+                Defaults to [hash, name, url_128, width, height, status, created_time].
+        limit: Maximum number of results to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+        hashes: Filter by specific image hashes.
+    Returns:
+        A dictionary containing the list of ad images.
+    """
+    default_fields = ['hash', 'name', 'url_128', 'width', 'height', 'status', 'created_time']
+    effective_fields = fields if fields is not None else default_fields
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/adimages"
+    params = _prepare_params(
+        {'access_token': access_token},
+        fields=effective_fields, limit=limit, after=after, before=before
+    )
+    if hashes:
+        params['hashes'] = json.dumps(hashes)
+    return _make_graph_api_call(url, params)
+
+
+# --- Organization Tools ---
+
+@mcp.tool()
+def get_ad_labels(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None
+) -> Dict:
+    """List all ad labels used for organizing campaigns, ad sets, and ads in an account.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, created_time, updated_time.
+                Defaults to [id, name, created_time].
+        limit: Maximum number of results to return.
+    Returns:
+        A dictionary containing the list of ad labels.
+    """
+    default_fields = ['id', 'name', 'created_time']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'adlabels', fields=effective_fields, limit=limit)
+
+
+# --- Automation / Ad Rules Tools ---
+
+@mcp.tool()
+def get_ad_rules(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """List all automated ad rules configured for an ad account (e.g. auto-pause, budget adjustments).
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        fields: Fields to return. Available: id, name, status, evaluation_spec,
+                execution_spec, filters, trigger, created_time, updated_time.
+                Defaults to [id, name, status, evaluation_spec, execution_spec, created_time].
+        limit: Maximum number of results to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the list of ad rules.
+    """
+    default_fields = ['id', 'name', 'status', 'evaluation_spec', 'execution_spec', 'created_time']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(act_id, 'adrules_library',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+@mcp.tool()
+def get_ad_rule_history(
+    rule_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """Get the execution history of an automated ad rule — what actions it has taken and when.
+    Args:
+        rule_id: The ID of the ad rule.
+        fields: Fields to return. Available: evaluation_time, results, is_manual.
+                Defaults to [evaluation_time, results, is_manual].
+        limit: Maximum number of history entries to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the rule's execution history.
+    """
+    default_fields = ['evaluation_time', 'results', 'is_manual']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(rule_id, 'history',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+# --- Lead Gen Tools ---
+
+@mcp.tool()
+def get_ad_leads(
+    ad_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """Get lead form submissions for a Lead Generation ad.
+    Args:
+        ad_id: The ID of the ad.
+        fields: Fields to return. Available: id, created_time, field_data (the actual
+                form responses), form_id, ad_id, ad_name, adset_id, adset_name,
+                campaign_id, campaign_name.
+                Defaults to [id, created_time, field_data, ad_name, campaign_name].
+        limit: Maximum number of leads to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the lead submissions and pagination info.
+    """
+    default_fields = ['id', 'created_time', 'field_data', 'ad_name', 'campaign_name']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(ad_id, 'leads',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
+# --- Budget Tools ---
+
+@mcp.tool()
+def get_minimum_budgets(
+    act_id: str,
+    bid_strategy: Optional[str] = None
+) -> Dict:
+    """Get the minimum daily budget requirements for different campaign objectives and bid strategies.
+    Args:
+        act_id: The act ID of the ad account, e.g. act_1234567890.
+        bid_strategy: Filter by bid strategy, e.g. LOWEST_COST_WITHOUT_CAP,
+                      LOWEST_COST_WITH_BID_CAP, COST_CAP.
+    Returns:
+        A dictionary containing minimum budget amounts by objective/bid strategy.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/minimum_budgets"
+    params = {'access_token': access_token}
+    if bid_strategy:
+        params['bid_strategy'] = bid_strategy
+    return _make_graph_api_call(url, params)
+
+
+# --- Pages Tools ---
+
+@mcp.tool()
+def list_pages(
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None
+) -> Dict:
+    """List all Facebook Pages the authenticated user manages.
+    Requires pages_show_list permission.
+    Args:
+        fields: Fields to return. Available: id, name, category, fan_count,
+                followers_count, verification_status, picture, cover, link.
+                Defaults to [id, name, category, fan_count, verification_status].
+        limit: Maximum number of pages to return.
+    Returns:
+        A dictionary containing the list of managed Pages.
+    """
+    default_fields = ['id', 'name', 'category', 'fan_count', 'verification_status']
+    effective_fields = fields if fields is not None else default_fields
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/me/accounts"
+    params = _prepare_params({'access_token': access_token}, fields=effective_fields, limit=limit)
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_page_insights(
+    page_id: str,
+    metric: List[str],
+    period: str = 'day',
+    date_preset: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None
+) -> Dict:
+    """Get performance insights for a Facebook Page (reach, impressions, engagement, etc.).
+    Requires pages_read_engagement permission.
+    Args:
+        page_id: The ID of the Facebook Page.
+        metric: List of metrics to retrieve. Common values:
+                page_impressions, page_impressions_unique, page_reach,
+                page_engaged_users, page_post_engagements,
+                page_fans, page_fans_online, page_video_views,
+                page_views_total, page_actions_post_reactions_total.
+        period: Aggregation period — day, week, days_28, month, lifetime.
+        date_preset: Preset date range, e.g. last_7d, last_30d, last_90d.
+        since: Start date as UNIX timestamp or YYYY-MM-DD string.
+        until: End date as UNIX timestamp or YYYY-MM-DD string.
+    Returns:
+        A dictionary containing the Page metrics data.
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{page_id}/insights"
+    params = {
+        'access_token': access_token,
+        'metric': ','.join(metric),
+        'period': period
+    }
+    if date_preset and not (since or until):
+        params['date_preset'] = date_preset
+    if since:
+        params['since'] = since
+    if until:
+        params['until'] = until
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_page_posts(
+    page_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None
+) -> Dict:
+    """Get published posts from a Facebook Page.
+    Requires pages_read_engagement permission.
+    Args:
+        page_id: The ID of the Facebook Page.
+        fields: Fields to return. Available: id, message, story, created_time,
+                full_picture, permalink_url, shares, reactions, comments,
+                insights{name,values}, attachments.
+                Defaults to [id, message, created_time, permalink_url, shares].
+        limit: Maximum number of posts to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+        since: Filter posts after this date (UNIX timestamp or YYYY-MM-DD).
+        until: Filter posts before this date (UNIX timestamp or YYYY-MM-DD).
+    Returns:
+        A dictionary containing the list of posts and pagination info.
+    """
+    default_fields = ['id', 'message', 'created_time', 'permalink_url', 'shares']
+    effective_fields = fields if fields is not None else default_fields
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{page_id}/published_posts"
+    params = _prepare_params(
+        {'access_token': access_token},
+        fields=effective_fields, limit=limit, after=after, before=before
+    )
+    if since:
+        params['since'] = since
+    if until:
+        params['until'] = until
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_promotable_posts(
+    page_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None
+) -> Dict:
+    """Get organic Page posts that are eligible to be boosted as ads.
+    Requires pages_read_engagement permission.
+    Args:
+        page_id: The ID of the Facebook Page.
+        fields: Fields to return. Available: id, message, story, created_time,
+                full_picture, permalink_url, is_eligible_for_promotion,
+                promotion_status.
+                Defaults to [id, message, created_time, permalink_url, is_eligible_for_promotion].
+        limit: Maximum number of posts to return.
+        after: Cursor for forward pagination.
+        before: Cursor for backward pagination.
+    Returns:
+        A dictionary containing the list of promotable posts.
+    """
+    default_fields = ['id', 'message', 'created_time', 'permalink_url', 'is_eligible_for_promotion']
+    effective_fields = fields if fields is not None else default_fields
+    return _fetch_edge(page_id, 'promotable_posts',
+                       fields=effective_fields, limit=limit, after=after, before=before)
+
+
 if __name__ == "__main__":
     _get_fb_access_token()
-    mcp.run(transport='stdio')
+    mcp.run(transport="sse")
     
