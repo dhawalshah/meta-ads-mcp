@@ -1,14 +1,14 @@
 {
   "dxt_version": "0.1",
-  "name": "facebook-ads-mcp-server",
-  "display_name": "Facebook Ads MCP Server",
-  "version": "0.1.0",
-  "description": "A Python MCP server for Facebook Ads API integration",
-  "long_description": "This extension provides comprehensive Facebook Ads management capabilities through a Python MCP server. It enables programmatic access to Facebook Ads data and management features, including account management, campaign insights, ad set operations, and performance analytics through the Facebook Graph API.",
+  "name": "meta-ads-mcp",
+  "display_name": "Meta Ads MCP",
+  "version": "0.2.0",
+  "description": "A Python MCP server for Meta (Facebook & Instagram) Ads API integration",
+  "long_description": "Comprehensive read-only access to Meta Ads data through Claude and other MCP clients. Query campaigns, ad sets, ads, creatives, audiences, pixels, insights, page performance, and more — all in natural language via the Meta Graph API.",
   "author": {
-    "name": "GoMarble AI",
-    "email": "support@gomarble.ai",
-    "url": "https://github.com/gomarble-ai"
+    "name": "Dhawal Shah",
+    "email": "dhawal@2stallions.com",
+    "url": "https://github.com/dhawalshah"
   },
   "icon": "favicon.png",
   "server": {
@@ -115,13 +115,16 @@
     }
   ],
   "keywords": [
+    "meta",
     "facebook",
+    "instagram",
     "ads",
     "marketing",
     "analytics",
     "advertising",
     "campaigns",
     "insights",
+    "audiences",
     "social media"
   ],
   "license": "MIT",
