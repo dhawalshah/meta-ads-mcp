@@ -131,7 +131,7 @@ Restart Claude Desktop after saving the config.
 
 ### Option B: Hosted Server (shared team access)
 
-Run a persistent HTTP server that your whole team connects to via SSE transport.
+Run a persistent HTTP server that your whole team connects to via HTTP transport.
 
 **Start the server:**
 
@@ -147,7 +147,7 @@ The server listens on port `8000` by default. Override with the `PORT` environme
 {
   "mcpServers": {
     "facebook-ads": {
-      "url": "http://localhost:8000/sse"
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
@@ -176,7 +176,7 @@ gcloud run deploy facebook-ads-mcp \
 {
   "mcpServers": {
     "facebook-ads": {
-      "url": "https://YOUR-SERVICE-URL.run.app/sse"
+      "url": "https://YOUR-SERVICE-URL.run.app/mcp"
     }
   }
 }
@@ -356,7 +356,7 @@ What's the minimum daily budget I need for a conversions-objective campaign?
 
 Forked from [gomarble-ai/facebook-ads-mcp-server](https://github.com/gomarble-ai/facebook-ads-mcp-server), with additions:
 - `FB_ACCESS_TOKEN` environment variable support (alongside `--fb-token` CLI arg)
-- SSE/HTTP transport for hosted team deployments
+- Streamable HTTP transport for hosted team deployments
 - 20 additional read-only tools: audiences, reach estimates, delivery estimates, targeting research, pixels, custom conversions, image library, ad previews, ad rules, lead gen, page insights, page posts, and page insights/posts
 
 ---
