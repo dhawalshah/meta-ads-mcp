@@ -2857,6 +2857,5 @@ def get_promotable_posts(
 
 
 if __name__ == "__main__":
-    _get_fb_access_token()
     mcp.run(transport="streamable-http")
     
